@@ -83,8 +83,8 @@ class Conv(nn.Module):
     def __init__(self, c1, c2, k=1, s=1, p=None, g=1, d=1, act=True):
         """Initializes a standard convolution layer with optional batch normalization and activation."""
         super().__init__()
-        # self.conv = nn.Conv2d(c1, c2, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
-        self.conv = KAN_Convolutional_Layer(c1, c2, k, s, autopad(k, p, d), dilation=d)
+        self.conv = nn.Conv2d(c1, c2, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
+        self.conv = KAN_Convolutional_Layer(c1, c2, (k, k), (s, s),(autopad(k, p, d), autopad(k, p, d)), (d, d))
         self.bn = nn.BatchNorm2d(c2)
         self.act = self.default_act if act is True else act if isinstance(act, nn.Module) else nn.Identity()
 
@@ -204,9 +204,9 @@ class BottleneckCSP(nn.Module):
         c_ = int(c2 * e)  # hidden channels
         self.cv1 = Conv(c1, c_, 1, 1)
         # self.cv2 = nn.Conv2d(c1, c_, 1, 1, bias=False)
-        self.cv2 = KAN_Convolutional_Layer(c1, c_, 1, 1)
+        self.cv2 = KAN_Convolutional_Layer(c1, c_, (1, 1), (1, 1))
         # self.cv3 = nn.Conv2d(c_, c_, 1, 1, bias=False)
-        self.cv3 = KAN_Convolutional_Layer(c_, c_, 1, 1)
+        self.cv3 = KAN_Convolutional_Layer(c_, c_, (1, 1), (1, 1))
         self.cv4 = Conv(2 * c_, c2, 1, 1)
         self.bn = nn.BatchNorm2d(2 * c_)  # applied to cat(cv2, cv3)
         self.act = nn.SiLU()

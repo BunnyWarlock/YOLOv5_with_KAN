@@ -91,7 +91,7 @@ class Detect(nn.Module):
         self.anchor_grid = [torch.empty(0) for _ in range(self.nl)]  # init anchor grid
         self.register_buffer("anchors", torch.tensor(anchors).float().view(self.nl, -1, 2))  # shape(nl,na,2)
         # self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch)  # output conv
-        self.m = nn.ModuleList(KAN_Convolutional_Layer(x, self.no * self.na, 1) for x in ch)
+        self.m = nn.ModuleList(KAN_Convolutional_Layer(x, self.no * self.na, (1, 1)) for x in ch)
         self.inplace = inplace  # use inplace ops (e.g. slice assignment)
 
     def forward(self, x):
@@ -142,7 +142,7 @@ class Segment(Detect):
         self.npr = npr  # number of protos
         self.no = 5 + nc + self.nm  # number of outputs per anchor
         # self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch)  # output conv
-        self.m = nn.ModuleList(KAN_Convolutional_Layer(x, self.no * self.na, 1) for x in ch)
+        self.m = nn.ModuleList(KAN_Convolutional_Layer(x, self.no * self.na, (1, 1)) for x in ch)
         self.proto = Proto(ch[0], self.npr, self.nm)  # protos
         self.detect = Detect.forward
 
