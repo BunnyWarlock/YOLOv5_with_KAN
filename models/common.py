@@ -127,17 +127,17 @@ class TransformerLayer(nn.Module):
         See  as described in https://arxiv.org/abs/2010.11929.
         """
         super().__init__()
-        # self.q = nn.Linear(c, c, bias=False)
-        self.q = KANLinear(c, c)
-        # self.k = nn.Linear(c, c, bias=False)
-        self.k = KANLinear(c, c)
-        # self.v = nn.Linear(c, c, bias=False)
-        self.v = KANLinear(c, c)
+        self.q = nn.Linear(c, c, bias=False)
+        # self.q = KANLinear(c, c)
+        self.k = nn.Linear(c, c, bias=False)
+        # self.k = KANLinear(c, c)
+        self.v = nn.Linear(c, c, bias=False)
+        # self.v = KANLinear(c, c)
         self.ma = nn.MultiheadAttention(embed_dim=c, num_heads=num_heads)
-        # self.fc1 = nn.Linear(c, c, bias=False)
-        self.fc1 = KANLinear(c, c)
-        # self.fc2 = nn.Linear(c, c, bias=False)
-        self.fc2 = KANLinear(c, c)
+        self.fc1 = nn.Linear(c, c, bias=False)
+        # self.fc1 = KANLinear(c, c)
+        self.fc2 = nn.Linear(c, c, bias=False)
+        # self.fc2 = KANLinear(c, c)
 
     def forward(self, x):
         """Performs forward pass using MultiheadAttention and two linear transformations with residual connections."""
@@ -157,8 +157,8 @@ class TransformerBlock(nn.Module):
         self.conv = None
         if c1 != c2:
             self.conv = Conv(c1, c2)
-        # self.linear = nn.Linear(c2, c2)  # learnable position embedding
-        self.linear = KANLinear(c2, c2)
+        self.linear = nn.Linear(c2, c2)  # learnable position embedding
+        # self.linear = KANLinear(c2, c2)
         self.tr = nn.Sequential(*(TransformerLayer(c2, num_heads) for _ in range(num_layers)))
         self.c2 = c2
 
@@ -1114,8 +1114,8 @@ class Classify(nn.Module):
         self.conv = Conv(c1, c_, k, s, autopad(k, p), g)
         self.pool = nn.AdaptiveAvgPool2d(1)  # to x(b,c_,1,1)
         self.drop = nn.Dropout(p=dropout_p, inplace=True)
-        # self.linear = nn.Linear(c_, c2)  # to x(b,c2)
-        self.linear = KANLinear(c_, c2)
+        self.linear = nn.Linear(c_, c2)  # to x(b,c2)
+        # self.linear = KANLinear(c_, c2)
 
     def forward(self, x):
         """Processes input through conv, pool, drop, and linear layers; supports list concatenation input."""
