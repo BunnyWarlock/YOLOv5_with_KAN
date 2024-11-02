@@ -56,6 +56,12 @@ from utils.general import (
 )
 from utils.torch_utils import copy_attr, smart_inference_mode
 
+import sys
+import torch.nn.functional as F
+sys.path.append('./KAN')
+from KAN.KANConv import KAN_Convolutional_Layer
+from KAN.KANLinear import KANLinear
+
 
 def autopad(k, p=None, d=1):
     """
@@ -78,7 +84,8 @@ class Conv(nn.Module):
     def __init__(self, c1, c2, k=1, s=1, p=None, g=1, d=1, act=True):
         """Initializes a standard convolution layer with optional batch normalization and activation."""
         super().__init__()
-        self.conv = nn.Conv2d(c1, c2, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
+        # self.conv = nn.Conv2d(c1, c2, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
+        self.conv = KAN_Convolutional_Layer(c1, c2, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
         self.bn = nn.BatchNorm2d(c2)
         self.act = self.default_act if act is True else act if isinstance(act, nn.Module) else nn.Identity()
 
@@ -121,12 +128,17 @@ class TransformerLayer(nn.Module):
         See  as described in https://arxiv.org/abs/2010.11929.
         """
         super().__init__()
-        self.q = nn.Linear(c, c, bias=False)
-        self.k = nn.Linear(c, c, bias=False)
-        self.v = nn.Linear(c, c, bias=False)
+        # self.q = nn.Linear(c, c, bias=False)
+        self.q = KANLinear(c, c, bias=False)
+        # self.k = nn.Linear(c, c, bias=False)
+        self.k = KANLinear(c, c, bias=False)
+        # self.v = nn.Linear(c, c, bias=False)
+        self.v = KANLinear(c, c, bias=False)
         self.ma = nn.MultiheadAttention(embed_dim=c, num_heads=num_heads)
-        self.fc1 = nn.Linear(c, c, bias=False)
-        self.fc2 = nn.Linear(c, c, bias=False)
+        # self.fc1 = nn.Linear(c, c, bias=False)
+        self.fc1 = KANLinear(c, c, bias=False)
+        # self.fc2 = nn.Linear(c, c, bias=False)
+        self.fc2 = KANLinear(c, c, bias=False)
 
     def forward(self, x):
         """Performs forward pass using MultiheadAttention and two linear transformations with residual connections."""
@@ -146,7 +158,8 @@ class TransformerBlock(nn.Module):
         self.conv = None
         if c1 != c2:
             self.conv = Conv(c1, c2)
-        self.linear = nn.Linear(c2, c2)  # learnable position embedding
+        # self.linear = nn.Linear(c2, c2)  # learnable position embedding
+        self.linear = KANLinear(c2, c2)
         self.tr = nn.Sequential(*(TransformerLayer(c2, num_heads) for _ in range(num_layers)))
         self.c2 = c2
 
@@ -191,8 +204,10 @@ class BottleneckCSP(nn.Module):
         super().__init__()
         c_ = int(c2 * e)  # hidden channels
         self.cv1 = Conv(c1, c_, 1, 1)
-        self.cv2 = nn.Conv2d(c1, c_, 1, 1, bias=False)
-        self.cv3 = nn.Conv2d(c_, c_, 1, 1, bias=False)
+        # self.cv2 = nn.Conv2d(c1, c_, 1, 1, bias=False)
+        self.cv2 = KAN_Convolutional_Layer(c1, c_, 1, 1, bias=False)
+        # self.cv3 = nn.Conv2d(c_, c_, 1, 1, bias=False)
+        self.cv3 = KAN_Convolutional_Layer(c_, c_, 1, 1, bias=False)
         self.cv4 = Conv(2 * c_, c2, 1, 1)
         self.bn = nn.BatchNorm2d(2 * c_)  # applied to cat(cv2, cv3)
         self.act = nn.SiLU()
@@ -1100,7 +1115,8 @@ class Classify(nn.Module):
         self.conv = Conv(c1, c_, k, s, autopad(k, p), g)
         self.pool = nn.AdaptiveAvgPool2d(1)  # to x(b,c_,1,1)
         self.drop = nn.Dropout(p=dropout_p, inplace=True)
-        self.linear = nn.Linear(c_, c2)  # to x(b,c2)
+        # self.linear = nn.Linear(c_, c2)  # to x(b,c2)
+        self.linear = KANLinear(c_, c2)
 
     def forward(self, x):
         """Processes input through conv, pool, drop, and linear layers; supports list concatenation input."""
