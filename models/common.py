@@ -57,7 +57,6 @@ from utils.general import (
 from utils.torch_utils import copy_attr, smart_inference_mode
 
 import sys
-import torch.nn.functional as F
 sys.path.append('./KAN')
 from KAN.KANConv import KAN_Convolutional_Layer
 from KAN.KANLinear import KANLinear
@@ -85,7 +84,7 @@ class Conv(nn.Module):
         """Initializes a standard convolution layer with optional batch normalization and activation."""
         super().__init__()
         # self.conv = nn.Conv2d(c1, c2, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
-        self.conv = KAN_Convolutional_Layer(c1, c2, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
+        self.conv = KAN_Convolutional_Layer(c1, c2, k, s, autopad(k, p, d), dilation=d)
         self.bn = nn.BatchNorm2d(c2)
         self.act = self.default_act if act is True else act if isinstance(act, nn.Module) else nn.Identity()
 
@@ -129,16 +128,16 @@ class TransformerLayer(nn.Module):
         """
         super().__init__()
         # self.q = nn.Linear(c, c, bias=False)
-        self.q = KANLinear(c, c, bias=False)
+        self.q = KANLinear(c, c)
         # self.k = nn.Linear(c, c, bias=False)
-        self.k = KANLinear(c, c, bias=False)
+        self.k = KANLinear(c, c)
         # self.v = nn.Linear(c, c, bias=False)
-        self.v = KANLinear(c, c, bias=False)
+        self.v = KANLinear(c, c)
         self.ma = nn.MultiheadAttention(embed_dim=c, num_heads=num_heads)
         # self.fc1 = nn.Linear(c, c, bias=False)
-        self.fc1 = KANLinear(c, c, bias=False)
+        self.fc1 = KANLinear(c, c)
         # self.fc2 = nn.Linear(c, c, bias=False)
-        self.fc2 = KANLinear(c, c, bias=False)
+        self.fc2 = KANLinear(c, c)
 
     def forward(self, x):
         """Performs forward pass using MultiheadAttention and two linear transformations with residual connections."""
@@ -205,9 +204,9 @@ class BottleneckCSP(nn.Module):
         c_ = int(c2 * e)  # hidden channels
         self.cv1 = Conv(c1, c_, 1, 1)
         # self.cv2 = nn.Conv2d(c1, c_, 1, 1, bias=False)
-        self.cv2 = KAN_Convolutional_Layer(c1, c_, 1, 1, bias=False)
+        self.cv2 = KAN_Convolutional_Layer(c1, c_, 1, 1)
         # self.cv3 = nn.Conv2d(c_, c_, 1, 1, bias=False)
-        self.cv3 = KAN_Convolutional_Layer(c_, c_, 1, 1, bias=False)
+        self.cv3 = KAN_Convolutional_Layer(c_, c_, 1, 1)
         self.cv4 = Conv(2 * c_, c2, 1, 1)
         self.bn = nn.BatchNorm2d(2 * c_)  # applied to cat(cv2, cv3)
         self.act = nn.SiLU()

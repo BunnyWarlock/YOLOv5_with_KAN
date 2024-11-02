@@ -69,7 +69,6 @@ except ImportError:
     thop = None
 
 import sys
-import torch.nn.functional as F
 sys.path.append('./KAN')
 from KAN.KANConv import KAN_Convolutional_Layer
 
