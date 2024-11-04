@@ -312,7 +312,7 @@ class C2fKAN(nn.Module):
         self.c = int(c2 * e)  # hidden channels
         self.cv1 = ConvWithKAN(c1, 2 * self.c, 1, 1)
         self.cv2 = ConvWithKAN((2 + n) * self.c, c2, 1)  # optional act=FReLU(c2)
-        self.m = nn.ModuleList(BottleneckWithKAN(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n))
+        self.m = nn.ModuleList(BottleneckWithKAN(self.c, self.c, shortcut, g, e=1.0) for _ in range(n))
 
     def forward(self, x):
         """Forward pass through C2f layer."""
