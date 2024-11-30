@@ -65,6 +65,9 @@ from utils.torch_utils import (
     time_sync,
 )
 
+from utils.anchor import make_center_anchors
+from utils.mask import center_to_corner, find_jaccard_overlap, corner_to_center
+
 try:
     import thop  # for FLOPs computation
 except ImportError:
@@ -160,9 +163,10 @@ class BaseModel(nn.Module):
         """
         return self._forward_once(x, profile, visualize)  # single-scale inference, train
 
-    def _forward_once(self, x, profile=False, visualize=False):
+    def _forward_once(self, x, profile=False, visualize=False, target=None):
         """Performs a forward pass on the YOLOv5 model, enabling profiling and feature visualization options."""
         y, dt = [], []  # outputs
+        cnt = 0
         for m in self.model:
             if m.f != -1:  # if not from previous layer
                 x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
@@ -172,6 +176,12 @@ class BaseModel(nn.Module):
             y.append(x if m.i in self.save else None)  # save output
             if visualize:
                 feature_visualization(x, m.type, m.i, save_dir=visualize)
+            if isinstance(m, Concat):
+                cnt += 1
+                if cnt == 2:
+                    feature = x
+        if target is not None:
+            return x, feature
         return x
 
     def _profile_one_layer(self, m, x, dt):
@@ -240,7 +250,8 @@ class DetectionModel(BaseModel):
         if anchors:
             LOGGER.info(f"Overriding model.yaml anchors with anchors={anchors}")
             self.yaml["anchors"] = round(anchors)  # override yaml value
-        self.model, self.save = parse_model(deepcopy(self.yaml), ch=[ch])  # model, savelist
+        self.model, self.save, self.anchors = parse_model(deepcopy(self.yaml), ch=[ch], get_anchor=True)  # model, savelist
+        self.num_anchors = len(self.anchors)
         self.names = [str(i) for i in range(self.yaml["nc"])]  # default names
         self.inplace = self.yaml.get("inplace", True)
 
@@ -260,16 +271,88 @@ class DetectionModel(BaseModel):
             self.stride = m.stride
             self._initialize_biases()  # only run once
 
+        ## 바꾸기
         # Init weights, biases
         initialize_weights(self)
         self.info()
         LOGGER.info("")
 
-    def forward(self, x, augment=False, profile=False, visualize=False):
+    
+    def _get_imitation_mask(self, x, targets, iou_factor=0.5):
+        """
+        gt_box: (B, K, 4) [x_min, y_min, x_max, y_max]
+        """
+        out_size = x.size(2)
+        batch_size = x.size(0)
+        device = targets.device
+
+        mask_batch = torch.zeros([batch_size, out_size, out_size])
+
+        if not len(targets):
+            return mask_batch
+
+        gt_boxes = [[] for i in range(batch_size)]
+        for i in range(len(targets)):
+            gt_boxes[int(targets[i, 0].data)] += [targets[i, 2:].clone().detach().unsqueeze(0)]
+
+        max_num = 0
+        for i in range(batch_size):
+            max_num = max(max_num, len(gt_boxes[i]))
+            if len(gt_boxes[i]) == 0:
+                gt_boxes[i] = torch.zeros((1, 4), device=device)
+            else:
+                gt_boxes[i] = torch.cat(gt_boxes[i], 0)
+
+        for i in range(batch_size):
+            # print(gt_boxes[i].device)
+            if max_num - gt_boxes[i].size(0):
+                gt_boxes[i] = torch.cat((gt_boxes[i], torch.zeros((max_num - gt_boxes[i].size(0), 4), device=device)), 0)
+            gt_boxes[i] = gt_boxes[i].unsqueeze(0)
+
+
+        gt_boxes = torch.cat(gt_boxes, 0)
+        gt_boxes *= out_size
+
+        center_anchors = make_center_anchors(anchors_wh=self.anchors, grid_size=out_size, device=device)
+        anchors = center_to_corner(center_anchors).view(-1, 4)  # (N, 4)
+
+        gt_boxes = center_to_corner(gt_boxes)
+
+        mask_batch = torch.zeros([batch_size, out_size, out_size], device=device)
+
+        for i in range(batch_size):
+            num_obj = gt_boxes[i].size(0)
+            if not num_obj:
+                continue
+
+            IOU_map = find_jaccard_overlap(anchors, gt_boxes[i], 0).view(out_size, out_size, self.num_anchors, num_obj)
+            max_iou, _ = IOU_map.view(-1, num_obj).max(dim=0)
+            mask_img = torch.zeros([out_size, out_size], dtype=torch.int64, requires_grad=False).type_as(x)
+            threshold = max_iou * iou_factor
+
+            for k in range(num_obj):
+
+                mask_per_gt = torch.sum(IOU_map[:, :, :, k] > threshold[k], dim=2)
+
+                mask_img += mask_per_gt
+
+                mask_img += mask_img
+            mask_batch[i] = mask_img
+
+        mask_batch = mask_batch.clamp(0, 1)
+        return mask_batch  # (B, h, w)
+
+    def forward(self, x, augment=False, profile=False, visualize=False, target=None):
         """Performs single-scale or augmented inference and may include profiling or visualization."""
         if augment:
             return self._forward_augment(x)  # augmented inference, None
-        return self._forward_once(x, profile, visualize)  # single-scale inference, train
+        
+        if target != None:
+            # x_center, y_center, width, height
+            preds, features = self._forward_once(x, profile, visualize, target)
+            mask = self._get_imitation_mask(features, target).unsqueeze(1)
+            return preds, features, mask
+        return self._forward_once(x, profile, visualize, target)  # single-scale inference, train
 
     def _forward_augment(self, x):
         """Performs augmented inference across different scales and flips, returning combined detections."""
@@ -283,7 +366,7 @@ class DetectionModel(BaseModel):
             # cv2.imwrite(f'img_{si}.jpg', 255 * xi[0].cpu().numpy().transpose((1, 2, 0))[:, :, ::-1])  # save
             yi = self._descale_pred(yi, fi, si, img_size)
             y.append(yi)
-        y = self._clip_augmented(y)  # clip augmented tails
+        # y = self._clip_augmented(y)  # clip augmented tails
         return torch.cat(y, 1), None  # augmented inference, train
 
     def _descale_pred(self, p, flips, scale, img_size):
@@ -376,7 +459,7 @@ class ClassificationModel(BaseModel):
         self.model = None
 
 
-def parse_model(d, ch):
+def parse_model(d, ch, get_anchor=False):  # model_dict, input_channels(3)
     """Parses a YOLOv5 model from a dict `d`, configuring layers based on input channels `ch` and model architecture."""
     LOGGER.info(f"\n{'':>3}{'from':>18}{'n':>3}{'params':>10}  {'module':<40}{'arguments':<30}")
     anchors, nc, gd, gw, act, ch_mul = (
@@ -461,6 +544,10 @@ def parse_model(d, ch):
         if i == 0:
             ch = []
         ch.append(c2)
+    anchors = sum(anchors, [])
+    anchors = [(anchors[i] // 8, anchors[i + 1] // 8) for i in range(0, len(anchors), 2)]
+    if get_anchor:
+        return nn.Sequential(*layers), sorted(save), anchors
     return nn.Sequential(*layers), sorted(save)
 
 

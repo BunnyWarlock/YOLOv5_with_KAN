@@ -158,7 +158,8 @@ def train(hyp, opt, device, callbacks):
 
     # Hyperparameters
     if isinstance(hyp, str):
-        with open(hyp, errors="ignore") as f:
+        # with open(hyp, errors="ignore") as f:
+        with open(hyp) as f:
             hyp = yaml.safe_load(f)  # load hyps dict
     LOGGER.info(colorstr("hyperparameters: ") + ", ".join(f"{k}={v}" for k, v in hyp.items()))
     opt.hyp = hyp.copy()  # for saving hyps to checkpoints
@@ -223,6 +224,15 @@ def train(hyp, opt, device, callbacks):
         model = Model(cfg, ch=3, nc=nc, anchors=hyp.get("anchors")).to(device)  # create
     amp = check_amp(model)  # check AMP
 
+    if opt.teacher_weight:
+        teacher_weight = opt.teacher_weight
+        with torch_distributed_zero_first(LOCAL_RANK):
+            teacher_weight = attempt_download(teacher_weight)  # download if not found locally
+        teacher_ckpt = torch.load(teacher_weight, map_location=device) 
+        teacher_model = Model(cfg or teacher_ckpt['model'].yaml, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
+
+        LOGGER.info(f'Load teacher model from {teacher_weight}')  # report
+
     # Freeze
     freeze = [f"model.{x}." for x in (freeze if len(freeze) > 1 else range(freeze[0]))]  # layers to freeze
     for k, v in model.named_parameters():
@@ -275,10 +285,15 @@ def train(hyp, opt, device, callbacks):
             "See Multi-GPU Tutorial at https://docs.ultralytics.com/yolov5/tutorials/multi_gpu_training to get started."
         )
         model = torch.nn.DataParallel(model)
+        if opt.teacher_weight:
+            teacher_model = torch.nn.DataParallel(teacher_model)
 
     # SyncBatchNorm
     if opt.sync_bn and cuda and RANK != -1:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model).to(device)
+
+        if opt.teacher_weight:
+            teacher_model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(teacher_model).to(device)
         LOGGER.info("Using SyncBatchNorm()")
 
     # Trainloader
@@ -331,6 +346,8 @@ def train(hyp, opt, device, callbacks):
     # DDP mode
     if cuda and RANK != -1:
         model = smart_DDP(model)
+        if opt.teacher_weight:
+            teacher_model = smart_DDP(teacher_model)
 
     # Model attributes
     nl = de_parallel(model).model[-1].nl  # number of detection layers (to scale hyps)
@@ -342,6 +359,15 @@ def train(hyp, opt, device, callbacks):
     model.hyp = hyp  # attach hyperparameters to model
     model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device) * nc  # attach class weights
     model.names = names
+
+    if opt.teacher_weight:
+        teacher_model.nc = nc  # attach number of classes to model
+        teacher_model.hyp = hyp  # attach hyperparameters to model
+        teacher_model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device) * nc  # attach class weights
+        teacher_model.names = names
+
+        for param in teacher_model.parameters():
+            param.requires_grad = False
 
     # Start training
     t0 = time.time()
@@ -362,9 +388,23 @@ def train(hyp, opt, device, callbacks):
         f"Logging results to {colorstr('bold', save_dir)}\n"
         f'Starting training for {epochs} epochs...'
     )
+
+    if opt.teacher_weight:
+        dump_image = torch.zeros((1, 3, opt.imgsz, opt.imgsz), device=device)
+        targets = torch.Tensor([[0, 0, 0, 0, 0, 0]]).to(device)
+        _, features, _ = model(dump_image, target=targets)  # forward
+        _, teacher_feature, _ = teacher_model(dump_image, target=targets) 
+
+        _, student_channel, student_out_size, _ = features.shape
+        _, teacher_channel, teacher_out_size, _ = teacher_feature.shape
+
+        stu_feature_adapt = nn.Sequential(nn.Conv2d(student_channel, teacher_channel, 3, padding=1, stride=int(student_out_size / teacher_out_size)), nn.ReLU()).to(device)
+
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         callbacks.run("on_train_epoch_start")
         model.train()
+        if opt.teacher_weight:
+            teacher_model.eval()
 
         # Update image weights (optional, single-GPU only)
         if opt.image_weights:
@@ -410,8 +450,15 @@ def train(hyp, opt, device, callbacks):
 
             # Forward
             with torch.cuda.amp.autocast(amp):
-                pred = model(imgs)  # forward
-                loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
+                targets = targets.to(device)
+                if opt.teacher_weight:
+                    pred, features, _ = model(imgs, target=targets)  # forward
+                    _, teacher_feature, mask = teacher_model(imgs, target=targets)
+                    loss, loss_items = compute_loss(pred, targets, teacher_feature.detach(), stu_feature_adapt(features), mask.detach())  # loss scaled by batch_size
+                else:
+                    pred = model(imgs)  # forward
+                    loss, loss_items = compute_loss(pred, targets)  # loss scaled by batch_size
+
                 if RANK != -1:
                     loss *= WORLD_SIZE  # gradient averaged between devices in DDP mode
                 if opt.quad:
@@ -494,8 +541,8 @@ def train(hyp, opt, device, callbacks):
                 torch.save(ckpt, last)
                 if best_fitness == fi:
                     torch.save(ckpt, best)
-                if opt.save_period > 0 and epoch % opt.save_period == 0:
-                    torch.save(ckpt, w / f"epoch{epoch}.pt")
+                # if opt.save_period > 0 and epoch % opt.save_period == 0:
+                #     torch.save(ckpt, w / f"epoch{epoch}.pt")
                 del ckpt
                 callbacks.run("on_model_save", last, epoch, final_epoch, best_fitness, fi)
 
@@ -565,6 +612,7 @@ def parse_opt(known=False):
     """
     parser = argparse.ArgumentParser()
     parser.add_argument("--weights", type=str, default=ROOT / "yolov5s.pt", help="initial weights path")
+    parser.add_argument('--teacher_weight', type=str, default= '', help='initial weights path')
     parser.add_argument("--cfg", type=str, default="", help="model.yaml path")
     parser.add_argument("--data", type=str, default=ROOT / "data/coco128.yaml", help="dataset.yaml path")
     parser.add_argument("--hyp", type=str, default=ROOT / "data/hyps/hyp.scratch-low.yaml", help="hyperparameters path")
@@ -733,7 +781,8 @@ def main(opt, callbacks=Callbacks()):
         tournament_size_min = 2
         tournament_size_max = 10
 
-        with open(opt.hyp, errors="ignore") as f:
+        # with open(opt.hyp, errors="ignore") as f:
+        with open(opt.hyp) as f:
             hyp = yaml.safe_load(f)  # load hyps dict
             if "anchors" not in hyp:  # anchors commented in hyp.yaml
                 hyp["anchors"] = 3

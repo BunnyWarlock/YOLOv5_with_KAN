@@ -103,6 +103,16 @@ class QFocalLoss(nn.Module):
             return loss
 
 
+def imitation_loss(teacher, student, mask):
+    if student is None or teacher is None:
+        return 0
+    # print(teacher.shape, student.shape, mask.shape)
+    diff = torch.pow(student - teacher, 2) * mask
+    diff = diff.sum() / mask.sum() / 2
+
+    return diff
+
+
 class ComputeLoss:
     """Computes the total loss for YOLOv5 model predictions, including classification, box, and objectness losses."""
 
@@ -136,7 +146,7 @@ class ComputeLoss:
         self.anchors = m.anchors
         self.device = device
 
-    def __call__(self, p, targets):  # predictions, targets
+    def __call__(self, p, targets, teacher=None, student=None, mask=None):  # predictions, targets, model
         """Performs forward pass, calculating class, box, and object loss for given predictions and targets."""
         lcls = torch.zeros(1, device=self.device)  # class loss
         lbox = torch.zeros(1, device=self.device)  # box loss
@@ -191,7 +201,9 @@ class ComputeLoss:
         lcls *= self.hyp["cls"]
         bs = tobj.shape[0]  # batch size
 
-        return (lbox + lobj + lcls) * bs, torch.cat((lbox, lobj, lcls)).detach()
+        lmask = imitation_loss(teacher, student, mask) * 0.01
+
+        return (lbox + lobj + lcls + lmask) * bs, torch.cat((lbox, lobj, lcls)).detach()
 
     def build_targets(self, p, targets):
         """Prepares model targets from input targets (image,class,x,y,w,h) for loss computation, returning class, box,
